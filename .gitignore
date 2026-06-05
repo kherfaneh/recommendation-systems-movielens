@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+movie-recommender/.venv/
+movie-recommender/data/
+*.csv
+*.zip
