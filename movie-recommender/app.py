@@ -67,6 +67,8 @@ def load_data() -> AppData:
     if "title" not in movies.columns:
         st.error("movies.csv must contain a `title` column.")
         st.stop()
+    if "genres" not in movies.columns:
+        movies["genres"] = "(no genres listed)"
 
     return AppData(user_item_matrix, user_similarity, movies)
 
@@ -76,6 +78,50 @@ def matrix_sparsity(user_item_matrix: pd.DataFrame) -> float:
     total_cells = user_item_matrix.shape[0] * user_item_matrix.shape[1]
     missing_cells = user_item_matrix.isna().sum().sum()
     return float(100 * missing_cells / total_cells)
+
+
+def get_seen_movies(
+    user_id: str,
+    user_item_matrix: pd.DataFrame,
+    movies: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return movies already rated by the selected user, sorted by rating."""
+    ratings = pd.to_numeric(user_item_matrix.loc[user_id], errors="coerce").dropna()
+    seen = ratings.rename("rating").reset_index()
+    seen = seen.rename(columns={seen.columns[0]: "movieId"})
+    seen["movieId"] = seen["movieId"].astype(str)
+    seen = seen.merge(movies[["movieId", "title", "genres"]], on="movieId", how="left")
+    seen["title"] = seen["title"].fillna("Unknown title")
+    seen["genres"] = seen["genres"].fillna("(no genres listed)")
+    return seen[["movieId", "title", "genres", "rating"]].sort_values(
+        by=["rating", "title"],
+        ascending=[False, True],
+    )
+
+
+def favorite_genres(seen_movies: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    """Estimate favorite genres from the user's highest-rated movies."""
+    if seen_movies.empty or "genres" not in seen_movies.columns:
+        return pd.DataFrame(columns=["genre", "rating_count", "average_rating"])
+
+    rows: list[dict[str, float | str]] = []
+    for row in seen_movies.itertuples(index=False):
+        for genre in str(row.genres).split("|"):
+            if genre and genre != "(no genres listed)":
+                rows.append({"genre": genre, "rating": float(row.rating)})
+
+    if not rows:
+        return pd.DataFrame(columns=["genre", "rating_count", "average_rating"])
+
+    genre_frame = pd.DataFrame(rows)
+    summary = (
+        genre_frame.groupby("genre")["rating"]
+        .agg(rating_count="count", average_rating="mean")
+        .reset_index()
+        .sort_values(by=["average_rating", "rating_count"], ascending=[False, False])
+        .head(top_n)
+    )
+    return summary
 
 
 def get_similar_users(
@@ -136,7 +182,9 @@ def attach_movie_titles(scores: pd.DataFrame, movies: pd.DataFrame, top_n: int) 
     recommendations["title"] = recommendations["title"].fillna(
         "Unknown title (movieId=" + recommendations["movieId"] + ")"
     )
-    return recommendations[["movieId", "title", "score", "similar_user_count"]]
+    return recommendations[
+        ["movieId", "title", "score", "similar_user_count", "similarity_weight_sum"]
+    ]
 
 
 def get_top_contributors(
@@ -173,6 +221,21 @@ def get_top_contributors(
     ).head(top_n)
 
 
+def score_formula(contributors: pd.DataFrame) -> str:
+    """Create a readable weighted-average formula from contributor rows."""
+    if contributors.empty:
+        return "No contributors available."
+
+    numerator = contributors["weighted_contribution"].sum()
+    denominator = contributors["similarity"].sum()
+    score = numerator / denominator if denominator > 0 else np.nan
+    return (
+        "final score = "
+        f"sum(weighted contributions) / sum(similarities) = "
+        f"{numerator:.4f} / {denominator:.4f} = {score:.4f}"
+    )
+
+
 def plot_top_similar_users(similar_users: pd.Series, top_n: int = 10) -> plt.Figure:
     """Create a matplotlib bar chart for the top similar users."""
     top_users = similar_users.head(top_n).sort_values()
@@ -184,6 +247,162 @@ def plot_top_similar_users(similar_users: pd.Series, top_n: int = 10) -> plt.Fig
     ax.set_xlim(0, max(0.01, float(top_users.max()) * 1.15))
     fig.tight_layout()
     return fig
+
+
+def render_selected_user_profile(
+    user_id: str,
+    user_item_matrix: pd.DataFrame,
+    movies: pd.DataFrame,
+) -> pd.DataFrame:
+    """Render rating behavior and favorite genres for the selected user."""
+    st.subheader("Selected User Profile")
+    seen_movies = get_seen_movies(user_id, user_item_matrix, movies)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Rated movies", len(seen_movies))
+    col2.metric(
+        "Average rating",
+        f"{seen_movies['rating'].mean():.2f}" if not seen_movies.empty else "n/a",
+    )
+    col3.metric("Highest rating", f"{seen_movies['rating'].max():.1f}" if not seen_movies.empty else "n/a")
+
+    with st.expander("Favorite genres", expanded=True):
+        genres = favorite_genres(seen_movies)
+        if genres.empty:
+            st.info("No genre information is available for this user.")
+        else:
+            st.dataframe(genres, width="stretch", hide_index=True)
+
+    with st.expander("Top rated movies by this user", expanded=True):
+        st.dataframe(seen_movies.head(10), width="stretch", hide_index=True)
+
+    return seen_movies
+
+
+def render_movies_already_seen(seen_movies: pd.DataFrame) -> None:
+    """Render all movies rated by the selected user."""
+    st.subheader("Movies Already Seen")
+    st.caption("These movies are removed from recommendation candidates.")
+    st.dataframe(seen_movies, width="stretch", hide_index=True)
+
+
+def render_matrix_explorer(user_item_matrix: pd.DataFrame) -> None:
+    """Render matrix size, sparsity, and a real sample of the matrix."""
+    st.subheader("Matrix Explorer and Sparsity Explanation")
+    users, movies = user_item_matrix.shape
+    total_cells = users * movies
+    observed_ratings = int(user_item_matrix.notna().sum().sum())
+    missing_ratings = int(user_item_matrix.isna().sum().sum())
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Users", users)
+    col2.metric("Movies", movies)
+    col3.metric("Known ratings", observed_ratings)
+    col4.metric("Missing ratings", missing_ratings)
+    col5.metric("Sparsity", f"{100 * missing_ratings / total_cells:.2f}%")
+
+    st.caption(
+        "Sparsity means most user/movie pairs have no rating. This is why the "
+        "system needs similar users to infer preferences."
+    )
+    st.dataframe(user_item_matrix.iloc[:8, :8], width="stretch")
+
+
+def render_recommendation_journey(
+    user_id: str,
+    seen_movies: pd.DataFrame,
+    similar_users: pd.Series,
+    scores: pd.DataFrame,
+    recommendations: pd.DataFrame,
+    user_item_matrix: pd.DataFrame,
+) -> None:
+    """Render the step-by-step journey from selected user to final recommendations."""
+    st.subheader("Recommendation Journey")
+    st.markdown("**User -> Find Similar Users -> Collect Their Highly Rated Movies -> Remove Already Seen Movies -> Compute Weighted Scores -> Generate Final Recommendations**")
+
+    with st.expander("1. User", expanded=True):
+        st.write(f"Selected user: `{user_id}`")
+        st.write(f"This user has already rated `{len(seen_movies)}` movies.")
+
+    with st.expander("2. Find Similar Users", expanded=True):
+        st.dataframe(
+            similar_users.head(10).rename("cosine_similarity").reset_index().rename(columns={"index": "user_id"}),
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.expander("3. Collect Highly Rated Movies From Similar Users"):
+        top_neighbor_ids = similar_users.head(10).index
+        neighbor_ratings = user_item_matrix.loc[top_neighbor_ids].apply(pd.to_numeric, errors="coerce")
+        highly_rated = (
+            neighbor_ratings.stack()
+            .rename("rating")
+            .reset_index()
+        )
+        highly_rated = highly_rated.rename(
+            columns={
+                highly_rated.columns[0]: "neighbor_user_id",
+                highly_rated.columns[1]: "movieId",
+            }
+        )
+        highly_rated = highly_rated[highly_rated["rating"] >= 4.0].head(20)
+        st.dataframe(highly_rated, width="stretch", hide_index=True)
+
+    with st.expander("4. Remove Already Seen Movies"):
+        seen_ids = set(seen_movies["movieId"].astype(str))
+        candidate_count_before = user_item_matrix.shape[1]
+        st.write(f"All movies in matrix: `{candidate_count_before}`")
+        st.write(f"Movies already seen by user {user_id}: `{len(seen_ids)}`")
+        st.write(f"Scored candidate movies after filtering: `{len(scores)}`")
+
+    with st.expander("5. Compute Weighted Scores"):
+        st.dataframe(
+            scores.head(10)[["movieId", "score", "similar_user_count", "similarity_weight_sum"]],
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.expander("6. Generate Final Recommendations", expanded=True):
+        st.dataframe(recommendations, width="stretch", hide_index=True)
+
+
+def render_user_comparison(
+    user_id: str,
+    similar_users: pd.Series,
+    user_item_matrix: pd.DataFrame,
+    movies: pd.DataFrame,
+) -> None:
+    """Compare selected user with their most similar user."""
+    st.subheader("Compare Two Users")
+    if similar_users.empty:
+        st.info("No similar user available for comparison.")
+        return
+
+    neighbor_id = str(similar_users.index[0])
+    similarity_score = float(similar_users.iloc[0])
+    user_ratings = pd.to_numeric(user_item_matrix.loc[user_id], errors="coerce")
+    neighbor_ratings = pd.to_numeric(user_item_matrix.loc[neighbor_id], errors="coerce")
+    overlap = user_ratings.dropna().index.intersection(neighbor_ratings.dropna().index)
+
+    st.write(
+        f"Comparing selected user `{user_id}` with most similar user `{neighbor_id}` "
+        f"(cosine similarity = `{similarity_score:.4f}`)."
+    )
+
+    if len(overlap) == 0:
+        st.info("These users have no overlapping rated movies in the matrix.")
+        return
+
+    comparison = pd.DataFrame(
+        {
+            "movieId": overlap.astype(str),
+            f"user_{user_id}_rating": user_ratings.loc[overlap].values,
+            f"user_{neighbor_id}_rating": neighbor_ratings.loc[overlap].values,
+        }
+    )
+    comparison = comparison.merge(movies[["movieId", "title"]], on="movieId", how="left")
+    comparison = comparison[["movieId", "title", f"user_{user_id}_rating", f"user_{neighbor_id}_rating"]]
+    st.dataframe(comparison.sort_values("title").head(30), width="stretch", hide_index=True)
 
 
 def render_educational_intro() -> None:
@@ -265,16 +484,21 @@ def render_recommendations(
 
             st.markdown(f"**Movie:** {row.title}")
             st.markdown("---")
-            for contributor in contributors.itertuples(index=False):
-                st.write(
-                    f"User {contributor.user_id} | "
-                    f"similarity={contributor.similarity:.4f} | "
-                    f"rating={contributor.rating:.1f} | "
-                    f"contribution={contributor.weighted_contribution:.4f}"
-                )
-            st.caption(
-                "Recommendation score = sum(similarity * rating) / sum(similarity)."
+            st.dataframe(
+                contributors,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "similarity": st.column_config.NumberColumn("similarity", format="%.4f"),
+                    "rating": st.column_config.NumberColumn("rating", format="%.1f"),
+                    "weighted_contribution": st.column_config.NumberColumn(
+                        "weighted contribution",
+                        format="%.4f",
+                    ),
+                },
             )
+            st.code(score_formula(contributors), language="text")
+            st.caption("Each contribution is similarity * rating.")
 
 
 def main() -> None:
@@ -311,7 +535,28 @@ def main() -> None:
 
     recommendations = attach_movie_titles(scores, data.movies, top_n)
 
+    seen_movies = render_selected_user_profile(
+        selected_user,
+        data.user_item_matrix,
+        data.movies,
+    )
+    render_matrix_explorer(data.user_item_matrix)
     render_debug_panel(similar_users, scores, data.user_item_matrix)
+    render_recommendation_journey(
+        selected_user,
+        seen_movies,
+        similar_users,
+        scores,
+        recommendations,
+        data.user_item_matrix,
+    )
+    render_movies_already_seen(seen_movies)
+    render_user_comparison(
+        selected_user,
+        similar_users,
+        data.user_item_matrix,
+        data.movies,
+    )
     st.subheader("User Similarity Visualization")
     st.pyplot(plot_top_similar_users(similar_users, top_n=10))
     render_recommendations(

@@ -128,7 +128,7 @@ Users with higher similarity have more influence.
 | `src/user-analysis.py` | Analysis | Shows most and least similar users |
 | `src/visualization.py` | Visualization | Creates plots in `outputs/plots/` |
 | `src/evaluation.py` | Evaluation | Computes RMSE, MAE, Precision@K, Recall@K |
-| `app.py` | Interactive UI | Streamlit app for visual exploration |
+| `app.py` | Interactive UI | Streamlit dashboard for visual exploration and education |
 
 ## Setup on Windows
 
@@ -264,17 +264,66 @@ http://localhost:8501
 1. Use the sidebar to select a `user_id`.
 2. Choose the number of recommendations: `5`, `10`, or `20`.
 3. Adjust how many similar users should influence the result.
-4. Read the debug panel:
+4. Read the selected user profile:
+   - number of rated movies
+   - average rating
+   - favorite genres
+   - top rated movies
+5. Explore the matrix section:
+   - number of users
+   - number of movies
+   - known ratings
+   - missing ratings
+   - sparsity percentage
+   - a real sample of the user-item matrix
+6. Read the debug panel:
    - similar users used
    - candidate movies scored
    - matrix sparsity
-5. View the top movie recommendations.
-6. Open each movie in the Explanation Panel to see which users influenced it.
-7. Look at the similarity chart to understand the selected user's closest
+7. Follow the Recommendation Journey section to see how raw user behavior turns
+   into final recommendations.
+8. Review Movies Already Seen to confirm the recommender removes movies the user
+   has already rated.
+9. Compare the selected user with their most similar user.
+10. View the top movie recommendations.
+11. Open each movie in the Explanation Panel to see which users influenced it,
+    their similarity values, their ratings, weighted contributions, and the
+    final weighted-average formula.
+12. Look at the similarity chart to understand the selected user's closest
    neighbors.
 
 The app is educational, not a production deployment. Its purpose is to make the
 recommendation pipeline visible and understandable.
+
+## Streamlit Dashboard Sections
+
+The enhanced dashboard contains these learning modules:
+
+| Section | What it teaches |
+| --- | --- |
+| How User-Based CF Works | The high-level recommender workflow |
+| Selected User Profile | What the selected user likes and how much data they have |
+| Matrix Explorer | Why the user-item matrix is sparse |
+| Debug Panel | How many neighbors and candidate movies are used |
+| Recommendation Journey | The full path from selected user to final recommendations |
+| Movies Already Seen | Which movies are excluded from recommendations |
+| Compare Two Users | Why the most similar user is considered similar |
+| User Similarity Visualization | Top similar users as a matplotlib bar chart |
+| Top-N Recommendations | Final recommended movies and scores |
+| Explanation Panel | The neighbor-level score breakdown for each movie |
+
+The most important educational section is **Recommendation Journey**. It shows:
+
+```text
+User
+-> Find Similar Users
+-> Collect Their Highly Rated Movies
+-> Remove Already Seen Movies
+-> Compute Weighted Scores
+-> Generate Final Recommendations
+```
+
+Each step uses real data from the selected user.
 
 ## Important Outputs
 
@@ -306,6 +355,18 @@ Recommended because:
 - User 57 similarity=0.3450 rating=5.0 contribution=1.7252
 - User 469 similarity=0.3307 rating=5.0 contribution=1.6533
 - User 156 similarity=0.2092 rating=5.0 contribution=1.0459
+```
+
+In the Streamlit dashboard, every recommended movie has a score breakdown:
+
+```text
+final score = sum(weighted contributions) / sum(similarities)
+```
+
+Each weighted contribution is:
+
+```text
+weighted contribution = neighbor similarity * neighbor rating
 ```
 
 ## Example Evaluation Output
